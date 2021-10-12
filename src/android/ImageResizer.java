@@ -282,6 +282,17 @@ public class ImageResizer extends CordovaPlugin {
 
                 FileOutputStream out = new FileOutputStream(file);
                 whiteBgBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
+
+                /*
+                to support images with transparency can probably do something like:
+
+                bitmap.setHasAlpha(true); 
+                bitmap.compress(Bitmap.CompressFormat.PNG, quality, out);
+
+                or see: https://github.com/JoschkaSchulz/cordova-plugin-image-resizer/compare/master...fidaktk:master
+
+                */
+
                 out.flush();
                 out.close();
             } catch (Exception e) {
