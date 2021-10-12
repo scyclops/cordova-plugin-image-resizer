@@ -5,6 +5,8 @@ import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
 import android.graphics.BitmapFactory;
 import android.graphics.Matrix;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.media.ExifInterface;
 import android.net.Uri;
 import android.os.Environment;
@@ -271,8 +273,15 @@ public class ImageResizer extends CordovaPlugin {
             File file = new File(folder, fileName);
             if (file.exists()) file.delete();
             try {
+                // Create new bitmap with white background using the size and config of the old one
+                Bitmap whiteBgBitmap = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), bitmap.getConfig());
+
+                Canvas canvas = new Canvas(whiteBgBitmap);
+                canvas.drawColor(Color.WHITE);
+                canvas.drawBitmap(bitmap, 0, 0, null);
+
                 FileOutputStream out = new FileOutputStream(file);
-                bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
+                whiteBgBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
                 out.flush();
                 out.close();
             } catch (Exception e) {
