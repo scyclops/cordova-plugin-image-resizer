@@ -4,324 +4,209 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Bitmap.CompressFormat;
 import android.graphics.BitmapFactory;
-import android.graphics.Matrix;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.media.ExifInterface;
 import android.net.Uri;
-import android.os.Environment;
-import android.util.Base64;
-import android.util.Log;
 
+import org.apache.cordova.LOG;
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
 import org.apache.cordova.PluginResult;
+
+import org.apache.cordova.camera.CameraLauncher;
 import org.apache.cordova.camera.FileHelper;
+import org.apache.cordova.camera.ExifHelper;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.Closeable;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
 
 public class ImageResizer extends CordovaPlugin {
-    private static final int ARGUMENT_NUMBER = 1;
+
+    private static final String LOG_TAG = "ImageResizer";
+
     public CallbackContext callbackContext;
 
-    private String uri;
-    private String folderName;
-    private String fileName;
+    private String uriString;
+
     private int quality;
+    // for compression, 0-100
+
     private int width;
     private int height;
-
-    private boolean base64 = false;
-    private boolean fit = false;
-    private boolean fixRotation = false;
-
+    // image is scaled to fit within width & height
 
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
         this.callbackContext = callbackContext;
 
         if (action.equals("resize")) {
-            cordova.getThreadPool().execute(new Runnable() {
-                public void run() {
-                    try {
-                        boolean isFileUri = false;
+            try {
+                JSONObject jsonObject = args.getJSONObject(0);
 
-                        checkParameters(args);
+                // required
+                uriString = jsonObject.getString("uri");
+                width = jsonObject.getInt("width");
+                height = jsonObject.getInt("height");
 
-                        // get the arguments
-                        JSONObject jsonObject = args.getJSONObject(0);
-                        uri = jsonObject.getString("uri");
+                // optional
+                quality = jsonObject.optInt("quality", 85);
 
-                        isFileUri = !uri.startsWith("data") ? true : false;
-
-                        folderName = null;
-                        if (jsonObject.has("folderName")) {
-                            folderName = jsonObject.getString("folderName");
-                        }
-                        fileName = null;
-                        if (jsonObject.has("fileName")) {
-                            fileName = jsonObject.getString("fileName");
-                        }
-                        quality = jsonObject.optInt("quality", 85);
-                        width = jsonObject.getInt("width");
-                        height = jsonObject.getInt("height");
-
-                        base64 = jsonObject.optBoolean("base64", false);
-                        fit = jsonObject.optBoolean("fit", false);
-                        fixRotation = jsonObject.optBoolean("fixRotation", false);
-
-                        Bitmap bitmap;
-                        // load the image from uri
-                        if (isFileUri) {
-                            bitmap = loadScaledBitmapFromUri(uri, width, height);
-
-                        } else {
-                            bitmap = ImageResizer.loadBase64ScaledBitmapFromUri(uri, width, height, fit);
-                        }
-
-                        if (fixRotation) {
-                            // Get the exif rotation in degrees, create a transformation matrix, and rotate
-                            // the bitmap
-                            int rotation = getRoationDegrees(getRotation(uri));
-                            Matrix matrix = new Matrix();
-                            if (rotation != 0f) {
-                                matrix.preRotate(rotation);
-                            }
-                            bitmap = Bitmap.createBitmap(
-                                    bitmap,
-                                    0,
-                                    0,
-                                    bitmap.getWidth(),
-                                    bitmap.getHeight(),
-                                    matrix,
-                                    true);
-                        }
-
-                        if (bitmap == null) {
-                            Log.e("Protonet", "There was an error reading the image");
-                            callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR));
-                        }
-
-
-                        String response;
-
-
-                        // save the image as jpeg on the device
-                        if (!base64) {
-                            Uri scaledFile = saveFile(bitmap);
-                            response = scaledFile.toString();
-                            if (scaledFile == null) {
-                                Log.e("Protonet", "There was an error saving the thumbnail");
-                                callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR));
-                            }
-                        } else {
-                            response = "data:image/jpeg;base64," + ImageResizer.getStringImage(bitmap, quality);
-                        }
-
-                        bitmap = null;
-
-                        callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.OK, response));
-
-
-                    } catch (JSONException e) {
-                        Log.e("Protonet", "JSON Exception during the Image Resizer Plugin... :(");
+                // run resize operation in the background b/c it can be slow
+                cordova.getThreadPool().execute(new Runnable() {
+                    public void run() {
+                        resize();
                     }
-                    callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR));
-                }
-            });
+                });
 
-
+            } catch (JSONException e) {
+                e.printStackTrace();
+                String msg = "Error parsing arguments: " + e.toString();
+                LOG.e(LOG_TAG, msg);
+                callbackContext.error(msg);
+            }
             return true;
-        } else {
-            callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.ERROR));
         }
-
         return false;
     }
 
-    public static String getStringImage(Bitmap bmp, int quality) {
+    private void resize() {
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        bmp.compress(Bitmap.CompressFormat.JPEG, quality, baos);
-        byte[] imageBytes = baos.toByteArray();
-
-        String encodedImage = Base64.encodeToString(imageBytes, Base64.NO_WRAP);
-        return encodedImage;
-    }
-
-    private static Bitmap loadBase64ScaledBitmapFromUri(String uriString, int width, int height, boolean fit) {
+        Bitmap bitmap = null;
         try {
-
-            String pureBase64Encoded = uriString.substring(uriString.indexOf(",") + 1);
-            byte[] decodedBytes = Base64.decode(pureBase64Encoded, Base64.DEFAULT);
-
-            Bitmap decodedBitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.length);
-
-            int sourceWidth = decodedBitmap.getWidth();
-            int sourceHeight = decodedBitmap.getHeight();
-
-            float ratio = sourceWidth > sourceHeight ? ((float) width / sourceWidth) : ((float) height / sourceHeight);
-
-            int execWidth = width;
-            int execHeigth = height;
-
-            if (fit) {
-                execWidth = Math.round(ratio * sourceWidth);
-                execHeigth = Math.round(ratio * sourceHeight);
-            }
-
-            Bitmap scaled = Bitmap.createScaledBitmap(decodedBitmap, execWidth, execHeigth, true);
-
-            decodedBytes = null;
-            decodedBitmap = null;
-
-            return scaled;
-
+            bitmap = copyAndGetScaledBitmap();
         } catch (Exception e) {
-            Log.e("Protonet", e.toString());
-        }
-        return null;
-    }
-
-    /**
-     * Gets the image rotation from the image EXIF Data
-     *
-     * @param exifOrientation ExifInterface.ORIENTATION_* representation of the rotation
-     * @return the rotation in degrees
-     */
-    private int getRoationDegrees(int exifOrientation) {
-        if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_90) {
-            return 90;
-        } else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_180) {
-            return 180;
-        } else if (exifOrientation == ExifInterface.ORIENTATION_ROTATE_270) {
-            return 270;
-        }
-        return 0;
-    }
-
-    /**
-     * Gets the image rotation from the image EXIF Data
-     *
-     * @param uriString the URI of the image to get the rotation for
-     * @return ExifInterface.ORIENTATION_* representation of the rotation
-     */
-    private int getRotation(String uriString) {
-        try {
-            ExifInterface exif = new ExifInterface(uriString);
-            return exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL);
-        } catch (IOException e) {
-            return ExifInterface.ORIENTATION_NORMAL;
-        }
-    }
-
-    /**
-     * Loads a Bitmap of the given android uri path
-     *
-     * @params uri the URI who points to the image
-     **/
-    private Bitmap loadScaledBitmapFromUri(String uriString, int width, int height) {
-        try {
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inJustDecodeBounds = true;
-            BitmapFactory.decodeStream(FileHelper.getInputStreamFromUriString(uriString, cordova), null, options);
-
-            //calc aspect ratio
-            int[] retval = calculateAspectRatio(options.outWidth, options.outHeight);
-
-            options.inJustDecodeBounds = false;
-            options.inSampleSize = calculateSampleSize(options.outWidth, options.outHeight, width, height);
-            Bitmap unscaledBitmap = BitmapFactory.decodeStream(FileHelper.getInputStreamFromUriString(uriString, cordova), null, options);
-            return Bitmap.createScaledBitmap(unscaledBitmap, retval[0], retval[1], true);
-        } catch (FileNotFoundException e) {
-            Log.e("Protonet", "File not found. :(");
-        } catch (IOException e) {
-            Log.e("Protonet", "IO Exception :(");
-        } catch (Exception e) {
-            Log.e("Protonet", e.toString());
-        }
-        return null;
-    }
-
-    private Uri saveFile(Bitmap bitmap) {
-        File folder = null;
-        if (folderName == null) {
-            folder = new File(this.getTempDirectoryPath());
-        } else {
-            if (folderName.contains("/")) {
-                folder = new File(folderName.replace("file://", ""));
-            } else {
-                Context context = this.cordova.getActivity().getApplicationContext();
-                folder = context.getDir(folderName, context.MODE_PRIVATE);
-            }
-        }
-        boolean success = true;
-        if (!folder.exists()) {
-            success = folder.mkdir();
+            e.printStackTrace();
+            LOG.w(LOG_TAG, "Error running copyAndGetScaledBitmap: " + e.toString());
         }
 
-        if (success) {
-            if (fileName == null) {
-                fileName = System.currentTimeMillis() + ".jpg";
-            }
-            File file = new File(folder, fileName);
-            if (file.exists()) file.delete();
+        if (bitmap == null) {
+            // try a simpler method
             try {
-                // Create new bitmap with white background using the size and config of the old one
-                Bitmap whiteBgBitmap = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), bitmap.getConfig());
-
-                Canvas canvas = new Canvas(whiteBgBitmap);
-                canvas.drawColor(Color.WHITE);
-                canvas.drawBitmap(bitmap, 0, 0, null);
-
-                FileOutputStream out = new FileOutputStream(file);
-                whiteBgBitmap.compress(Bitmap.CompressFormat.JPEG, quality, out);
-
-                /*
-                to support images with transparency can probably do something like:
-
-                bitmap.setHasAlpha(true); 
-                bitmap.compress(Bitmap.CompressFormat.PNG, quality, out);
-
-                or see: https://github.com/JoschkaSchulz/cordova-plugin-image-resizer/compare/master...fidaktk:master
-
-                */
-
-                out.flush();
-                out.close();
+                readExifData(uriString);
+                bitmap = getScaledBitmap(uriString);
             } catch (Exception e) {
-                Log.e("Protonet", e.toString());
+                e.printStackTrace();
+                LOG.w(LOG_TAG, "Error running simple bitmap scaling: " + e.toString());
             }
-            return Uri.fromFile(file);
         }
-        return null;
+
+        if (bitmap == null) {
+            String msg = "Error reading image";
+            LOG.e(LOG_TAG, msg);
+            callbackContext.error(msg);
+            return;
+        }
+
+        try {
+            String modifiedPath = outputModifiedBitmap(bitmap);
+
+            // the modified image is cached by the app
+            // system time is added to prevent the cache from serving the wrong image
+            callbackContext.success("file://" + modifiedPath + "?" + System.currentTimeMillis());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            String msg = "Error outputting image: " + e.toString();
+            LOG.e(LOG_TAG, msg);
+            callbackContext.error(msg);
+        } finally {
+            if (bitmap != null) {
+                bitmap.recycle();
+                bitmap = null;
+                System.gc();
+            }
+        }
     }
 
-    /**
-     * Figure out what ratio we can load our image into memory at while still being bigger than
-     * our desired width and height
-     *
-     * @param srcWidth
-     * @param srcHeight
-     * @param dstWidth
-     * @param dstHeight
-     * @return
-     */
-    private int calculateSampleSize(int srcWidth, int srcHeight, int dstWidth, int dstHeight) {
-        final float srcAspect = (float) srcWidth / (float) srcHeight;
-        final float dstAspect = (float) dstWidth / (float) dstHeight;
-
-        if (srcAspect > dstAspect) {
-            return srcWidth / dstWidth;
-        } else {
-            return srcHeight / dstHeight;
+    private void closeStream(Closeable stream) {
+        if (stream != null) {
+            try {
+                stream.close();
+            } catch (IOException e) {
+                LOG.d(LOG_TAG, "Exception while closing stream");
+            }
         }
+    }
+
+    private void readExifData(String uri) {
+        // only try to read exif data if the image is a jpeg image
+
+        String mimeType = FileHelper.getMimeType(uriString, cordova);
+
+        if (mimeType != null && JPEG_MIME_TYPE.equalsIgnoreCase(mimeType)) {
+            String filePath = uri.replace("file://", ""); // ExifInterface doesn't like the file:// prefix
+            try {
+                exifData = new ExifHelper();
+                exifData.createInFile(filePath);
+                exifData.readExifData();
+            } catch (IOException e) {
+                exifData = null;
+                e.printStackTrace();
+                LOG.w(LOG_TAG, "Failed to read exif data: " + e.toString());
+            }
+        }
+    }
+
+    private Bitmap getScaledBitmap(String uri_string) throws IOException {
+
+        // figure out the original width and height of the image
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        
+        options.inJustDecodeBounds = true;
+
+        InputStream fileStream = FileHelper.getInputStreamFromUriString(uri_string, cordova);
+        try {
+            BitmapFactory.decodeStream(fileStream, null, options);
+        } finally {
+            closeStream(fileStream);
+        }
+
+        if (options.outWidth == 0 || options.outHeight == 0) {
+            return null;
+        }
+
+        // determine the correct aspect ratio
+        int[] widthHeight = calculateAspectRatio(options.outWidth, options.outHeight);
+        int newWidth = widthHeight[0];
+        int newHeight = widthHeight[1];
+
+        // load in the smallest bitmap possible that is closest to the size we want
+        options.inJustDecodeBounds = false;
+        options.inSampleSize = CameraLauncher.calculateSampleSize(options.outWidth, options.outHeight, newWidth, newHeight);
+
+        fileStream = FileHelper.getInputStreamFromUriString(uri_string, cordova);
+        
+        Bitmap unscaledBitmap = null;
+        try {
+            unscaledBitmap = BitmapFactory.decodeStream(fileStream, null, options);
+        } finally {
+            closeStream(fileStream);
+        }
+
+        if (unscaledBitmap == null) {
+            return null;
+        }
+
+        Bitmap scaledBitmap = Bitmap.createScaledBitmap(unscaledBitmap, newWidth, newHeight, true);
+
+        if (scaledBitmap != unscaledBitmap) {
+            unscaledBitmap.recycle();
+            unscaledBitmap = null;
+            System.gc();
+        }
+
+        return scaledBitmap;
     }
 
     /**
@@ -342,11 +227,11 @@ public class ImageResizer extends CordovaPlugin {
         }
         // Only the width was specified
         else if (newWidth > 0 && newHeight <= 0) {
-            newHeight = (newWidth * origHeight) / origWidth;
+            newHeight = (int)((double)(newWidth / (double)origWidth) * origHeight); // camera-plugin
         }
         // only the height was specified
         else if (newWidth <= 0 && newHeight > 0) {
-            newWidth = (newHeight * origWidth) / origHeight;
+            newWidth = (int)((double)(newHeight / (double)origHeight) * origWidth); // camera-plugin
         }
         // If the user specified both a positive width and height
         // (potentially different aspect ratio) then the width or height is
@@ -371,28 +256,193 @@ public class ImageResizer extends CordovaPlugin {
         return retval;
     }
 
-    private boolean checkParameters(JSONArray args) {
-        if (args.length() != ARGUMENT_NUMBER) {
-            callbackContext.sendPluginResult(new PluginResult(PluginResult.Status.INVALID_ACTION));
-            return false;
+    //////////////////// below adapted from the cordova-plugin-camera code
+
+    private static final int JPEG = 0;
+    private static final int PNG = 1;
+    private static final String JPEG_TYPE = "jpg";
+    private static final String PNG_TYPE = "png";
+    private static final String JPEG_EXTENSION = "." + JPEG_TYPE;
+    private static final String PNG_EXTENSION = "." + PNG_TYPE;
+    private static final String PNG_MIME_TYPE = "image/png";
+    private static final String JPEG_MIME_TYPE = "image/jpeg";
+    private static final String TIME_FORMAT = "yyyyMMdd_HHmmss";
+
+    private int encodingType = JPEG;
+    // XXX: could support encoding PNG images later if needed
+
+    private ExifHelper exifData = null;
+    // exf data from the input image
+
+
+    /**
+     * Write an inputstream to local disk
+     *
+     * @param fis - The InputStream to write
+     * @param dest - Destination on disk to write to
+     * @throws FileNotFoundException
+     * @throws IOException
+     */
+    private void writeUncompressedImage(InputStream fis, Uri dest) throws FileNotFoundException, IOException {
+        OutputStream os = null;
+        try {
+            os = this.cordova.getActivity().getContentResolver().openOutputStream(dest);
+            byte[] buffer = new byte[4096];
+            int len;
+            while ((len = fis.read(buffer)) != -1) {
+                os.write(buffer, 0, len);
+            }
+            os.flush();
+        } finally {
+            closeStream(os);
         }
-        return true;
+    }
+
+    private String getTemporaryFileName() {
+        String timeStamp = new SimpleDateFormat(TIME_FORMAT).format(new Date());
+        String fileName = "IMG_" + timeStamp + (getExtensionForEncodingType());
+        return getTempDirectoryPath() + fileName;
+    }
+
+    /**
+     * Return a scaled and rotated bitmap based on the target width and height
+     *
+     * @return Bitmap
+     * @throws IOException
+     */
+    private Bitmap copyAndGetScaledBitmap() throws IOException {
+        /*
+
+        Copy the inputstream to a temporary file on the device.
+        We then use this temporary file to determine the width/height.
+        This is the only way to determine the orientation of the photo coming from 3rd party providers (Google Drive, Dropbox,etc)
+
+        */
+        File localFile = null;
+        InputStream fileStream = FileHelper.getInputStreamFromUriString(uriString, cordova);
+        try {
+            Uri fileUri = null;
+
+            try {
+                localFile = new File(getTemporaryFileName());
+
+                fileUri = Uri.fromFile(localFile);
+
+                writeUncompressedImage(fileStream, fileUri);
+
+            } catch (Exception e) {
+                e.printStackTrace();
+                LOG.e(LOG_TAG, "Exception copying to temporary file: " + e.toString());
+                return null;
+            }
+
+            String fileUriString = fileUri.toString();
+
+            readExifData(fileUriString);
+
+            return getScaledBitmap(fileUriString);
+
+        } finally {
+            closeStream(fileStream);
+
+            // delete the temporary copy
+            if (localFile != null) {
+                localFile.delete();
+            }
+        }
     }
 
     private String getTempDirectoryPath() {
-        File cache = null;
-
-        // SD Card Mounted
-        if (Environment.getExternalStorageState().equals(Environment.MEDIA_MOUNTED)) {
-            cache = new File(Environment.getExternalStorageDirectory().getAbsolutePath() +
-                    "/Android/data/" + cordova.getActivity().getPackageName() + "/cache/");
-        } else {
-            // Use internal storage
-            cache = cordova.getActivity().getCacheDir();
-        }
-
+        File cache = cordova.getActivity().getCacheDir();
         // Create the cache directory if it doesn't exist
         cache.mkdirs();
         return cache.getAbsolutePath();
+    }
+
+    private String getExtensionForEncodingType() {
+        return this.encodingType == JPEG ? JPEG_EXTENSION : PNG_EXTENSION;
+    }
+
+    /**
+     * Converts output image format int value to string value of mime type.
+     * @return String String value of mime type or empty string if mime type is not supported
+     */
+    private String getMimetypeForEncodingType() {
+        if (encodingType == PNG) return PNG_MIME_TYPE;
+        if (encodingType == JPEG) return JPEG_MIME_TYPE;
+        return "";
+    }
+
+    private String calculateModifiedBitmapOutputFileName(String mimeTypeOfOriginalFile, String realPath) {
+        if (realPath == null) {
+            return "modified" + getExtensionForEncodingType();
+        }
+        String fileName = realPath.substring(realPath.lastIndexOf('/') + 1);
+        if (getMimetypeForEncodingType().equals(mimeTypeOfOriginalFile)) {
+            return fileName;
+        }
+        // if the picture is not a jpeg or png, (a .heic for example) when processed to a bitmap
+        // the file extension is changed to the output format, f.e. an input file my_photo.heic could become my_photo.jpg
+        return fileName.substring(fileName.lastIndexOf(".") + 1) + getExtensionForEncodingType();
+    }
+
+    private CompressFormat getCompressFormatForEncodingType(int encodingType) {
+        return encodingType == JPEG ? CompressFormat.JPEG : CompressFormat.PNG;
+    }
+
+    private String outputModifiedBitmap(Bitmap bitmap) throws IOException {
+
+        Uri uri = Uri.parse(uriString);
+        String mimeTypeOfOriginalFile = FileHelper.getMimeType(uriString, cordova);
+
+        // Some content: URIs do not map to file paths (e.g. picasa).
+        String realPath = FileHelper.getRealPath(uri, this.cordova);
+        String fileName = calculateModifiedBitmapOutputFileName(mimeTypeOfOriginalFile, realPath);
+
+        String modifiedPath = getTempDirectoryPath() + "/" + fileName;
+
+        Bitmap whiteBgBitmap = null;
+        CompressFormat compressFormat = getCompressFormatForEncodingType(this.encodingType);
+
+        OutputStream os = new FileOutputStream(modifiedPath);
+        try {
+            if (this.encodingType == JPEG && !JPEG_MIME_TYPE.equals(mimeTypeOfOriginalFile)) {
+                // outputting jpeg but the input file isn't a jpeg, so it may have transparency
+                // but jpeg's don't support transparency
+                // so we get rid of the transparency by using a white background
+
+                whiteBgBitmap = Bitmap.createBitmap(bitmap.getWidth(), bitmap.getHeight(), bitmap.getConfig());
+
+                Canvas canvas = new Canvas(whiteBgBitmap);
+                canvas.drawColor(Color.WHITE);
+                canvas.drawBitmap(bitmap, 0, 0, null);
+                canvas = null;
+
+                whiteBgBitmap.compress(compressFormat, quality, os);
+
+            } else {
+                bitmap.compress(compressFormat, quality, os);
+            }
+        } finally {
+            if (whiteBgBitmap != null) {
+                whiteBgBitmap.recycle();
+                whiteBgBitmap = null;
+                System.gc();
+            }
+            os.close(); // not catching IOException b/c it may mean things don't work
+        }
+
+        if (this.encodingType == JPEG && exifData != null) {
+            // write the exif data into the new resized image
+            try {
+                exifData.createOutFile(modifiedPath);
+                exifData.writeExifData();
+                exifData = null;
+            } catch (IOException e) {
+                LOG.w(LOG_TAG, "Failed to write exif data: " + e.toString());
+            }
+        }
+
+        return modifiedPath;
     }
 }
