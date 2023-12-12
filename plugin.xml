@@ -20,9 +20,6 @@
         <param name="android-package" value="info.protonet.imageresizer.ImageResizer"/>
       </feature>
     </config-file>
-    <config-file target="AndroidManifest.xml" parent="/*">
-      <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
-    </config-file>
 
     <source-file src="src/android/ImageResizer.java" target-dir="src/info/protonet/imageresizer" />
     <!--
