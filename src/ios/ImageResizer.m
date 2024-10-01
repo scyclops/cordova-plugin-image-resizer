@@ -88,7 +88,7 @@
         [sourceImage drawInRect:thumbnailRect];
         
         tempImage = UIGraphicsGetImageFromCurrentImageContext();
-        NSLog(@"image resizer tempImage: %@", (tempImage  ? @"image exsist" : @"null" ));
+        NSLog(@"image resizer tempImage: %@", (tempImage  ? @"image exists" : @"null" ));
         
         UIGraphicsEndImageContext();
         NSData *imageData = UIImageJPEGRepresentation(tempImage, [quality floatValue] / 100.0f );
