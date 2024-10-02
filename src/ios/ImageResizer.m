@@ -15,7 +15,7 @@
 
     [self.commandDelegate runInBackground:^{
 
-        NSLog(@"image resizer resize running");
+        //NSLog(@"image resizer resize running");
 
         __block PHImageRequestOptions * imageRequestOptions = [[PHImageRequestOptions alloc] init];
         
@@ -24,7 +24,7 @@
         // get the arguments and the stuff inside of it
         NSDictionary* arguments = [command.arguments objectAtIndex:0];
         NSString* imageUrlString = [arguments objectForKey:@"uri"];
-        NSLog(@"image resizer image url: %@", imageUrlString);
+        //NSLog(@"image resizer image url: %@", imageUrlString);
         
         NSString* quality = [arguments objectForKey:@"quality"];
         CGSize frameSize = CGSizeMake([[arguments objectForKey:@"width"] floatValue], [[arguments objectForKey:@"height"] floatValue]);
@@ -53,7 +53,7 @@
             
         }];
         
-        NSLog(@"image resizer sourceImage: %@", (sourceImage ? @"image exists" : @"null" ));
+        //NSLog(@"image resizer sourceImage: %@", (sourceImage ? @"image exists" : @"null" ));
         
         UIImage *tempImage = nil;
         CGSize targetSize = frameSize;
@@ -88,7 +88,7 @@
         [sourceImage drawInRect:thumbnailRect];
         
         tempImage = UIGraphicsGetImageFromCurrentImageContext();
-        NSLog(@"image resizer tempImage: %@", (tempImage  ? @"image exists" : @"null" ));
+        //NSLog(@"image resizer tempImage: %@", (tempImage  ? @"image exists" : @"null" ));
         
         UIGraphicsEndImageContext();
         NSData *imageData = UIImageJPEGRepresentation(tempImage, [quality floatValue] / 100.0f );
